@@ -1,12 +1,9 @@
 using System;
 using System.IO;
-using System.Threading.Tasks;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.Azure.WebJobs;
-using Microsoft.Azure.WebJobs.Extensions.Http;
-using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Logging;
 using System.Text;
+using System.Threading.Tasks;
+using Microsoft.Azure.WebJobs;
+using Microsoft.Extensions.Logging;
 using PgpCore;
 
 namespace AzureFunctionsPGPEncrypt
@@ -16,25 +13,28 @@ namespace AzureFunctionsPGPEncrypt
         private const string PublicKeyEnvironmentVariable = "pgp-public-key";
 
         [FunctionName(nameof(PGPEncrypt))]
-        public static async Task<IActionResult> RunAsync(
-            [HttpTrigger(AuthorizationLevel.Function, "post", Route = null)]
-        HttpRequest req, ILogger log)
-        {
-            log.LogInformation($"C# HTTP trigger function {nameof(PGPEncrypt)} processed a request.");
-
-            string publicKeyBase64 = Environment.GetEnvironmentVariable(PublicKeyEnvironmentVariable);
-
-            if (string.IsNullOrEmpty(publicKeyBase64))
-            {
-                return new BadRequestObjectResult($"Please add a base64 encoded public key to an environment variable called {PublicKeyEnvironmentVariable}");
-            }
-
+        public static async Task Run(
+            [BlobTrigger("testingcontainer/{blobName}.{blobExtension}", Connection = "AzureWebJobsStorage")] Stream blobStream,
+            [Blob("testingcontainerencrypted/{blobName}.pgp", FileAccess.Write)] Stream encryptedBlob,
+            string blobName,
+            string blobExtension,
+            ILogger log            
+        ) {
+            log.LogInformation("Getting local variables");
+            string publicKeyBase64 = Environment.GetEnvironmentVariable("pgp-public-key", EnvironmentVariableTarget.Process);
             byte[] publicKeyBytes = Convert.FromBase64String(publicKeyBase64);
             string publicKey = Encoding.UTF8.GetString(publicKeyBytes);
-            req.EnableBuffering(); //Make RequestBody Stream seekable
-            Stream encryptedData = await EncryptAsync(req.Body, publicKey);
 
-            return new OkObjectResult(encryptedData);
+            log.LogInformation("Setting pgp content");
+            Stream encryptedStream = await EncryptAsync(blobStream, publicKey);
+
+            log.LogInformation("Writting to output trigger");
+            using (MemoryStream memoryStream = new MemoryStream())
+            {
+                encryptedStream.CopyTo(memoryStream);
+                var byteArray = memoryStream.ToArray();
+                await encryptedBlob.WriteAsync(byteArray, 0, byteArray.Length);
+            }
         }
 
         private static async Task<Stream> EncryptAsync(Stream inputStream, string publicKey)
